@@ -1,0 +1,977 @@
+---
+title: "IRS Normalisation approach CSF data"
+author: "JJ"
+date: "09/10/2024"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r, include = FALSE}
+
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(readxl)
+library(ggpubr)
+library(survminer)
+library(survival)
+library(tableone)
+library(tidyverse)
+library(janitor)
+library(limma) #for plotDensities function
+library(ggfortify)
+library(corrplot)
+library(gmm)
+library(pals)
+library(corrplot)
+library(circlize)
+library(randomcoloR)
+library(ggVennDiagram)
+library(psych)
+library(data.table)
+
+#rm(list = ls())
+```
+
+
+```{r }
+## Pre- normalization data processing 
+
+#load in and clean data
+#load in data
+
+
+#für Windows:
+#Prot_raw = read.delim("C:/Users/AG_Oellerich/OneDrive - Johann Wolfgang Goethe Universität/Frankfurt_Oellerich/2024-08_CSF_Klinsing_cohort2/MS results/proteinGroups.txt", stringsAsFactors = FALSE, colClasses = "character")
+Prot_raw = read.delim("/Users/josefinejakob/Library/CloudStorage/OneDrive-JohannWolfgangGoetheUniversität/Frankfurt_Oellerich/2024-08_CSF_Klinsing_cohort2/MS results/proteinGroups.txt", stringsAsFactors = FALSE, colClasses = "character")
+
+## Pre- normalization data processing 
+
+#To include only valid protein information, proteins that were identified only by site, reverse or with potential contaminant were excluded. 
+
+
+#clean column names for spaces 
+#names(Prot_raw) <- str_replace_all(names(Prot_raw), c(" " = "_"))
+Prot_raw <- as.data.frame(Prot_raw)
+```
+
+#Analysis WITHOUT contaminants
+```{r }
+#remove "remove only by side" identified proteins 
+Prot_raw1 <- dplyr::filter(Prot_raw, Potential.contaminant != "+") %>%
+  dplyr::filter(Reverse != "+") %>%
+  dplyr::filter(Only.identified.by.site != "+")
+
+#Pull out relevant information of Reporter.intensity.corrected
+Prot_raw1 <- Prot_raw1 %>%
+  dplyr::select(Protein.IDs, contains("Reporter.intensity.corrected")) %>%
+  filter(!str_detect(Protein.IDs, "^REV"))
+#convert Zero values to NA
+Prot_raw1[,-1][Prot_raw1[,-1] == "0"] <- NA
+#remove rows with only NA 
+Prot_raw2 <- Prot_raw1 %>%
+  filter(rowSums(is.na(Prot_raw1[,-1])) != ncol(Prot_raw1[,-1]))
+#TRANFORM INTENSITY COLUMNS AS NUMERIC
+intensity.names = grep("^Reporter.intensity.corrected", names(Prot_raw2), value = TRUE)
+Prot_raw2[intensity.names] = sapply(Prot_raw2[intensity.names], as.numeric)
+glimpse(Prot_raw2)
+
+#remove redundant colname information 
+col_headers <- colnames(Prot_raw2)
+col_headers <- str_replace(col_headers, "Reporter.intensity.corrected", "")
+colnames(Prot_raw2) <- col_headers
+
+glimpse(Prot_raw2)
+
+#rename_IDs <- read_excel("C:/Users/AG_Oellerich/OneDrive - Johann Wolfgang Goethe Universität/Frankfurt_Oellerich/2024-08_CSF_Klinsing_cohort2/MS results/rename_sample_IDs.xlsx")
+rename_IDs <- read_excel("/Users/josefinejakob/Library/CloudStorage/OneDrive-JohannWolfgangGoetheUniversität/Frankfurt_Oellerich/2024-08_CSF_Klinsing_cohort2/MS results/rename_sample_IDs.xlsx")
+
+# Create new column names by appending the condition
+new_col_names <- paste(rename_IDs$MS_ID, rename_IDs$Group, rename_IDs$Sample_ID, sep = "_")  #The paste() function appends the Group to the column names using an underscore (_).
+
+# Ensure the length of new_col_names matches the number of columns being renamed
+if(length(new_col_names) == length(2:127)) {
+  # Assign the new column names directly to the specified columns of Prot_raw2
+  colnames(Prot_raw2)[2:127] <- new_col_names
+} else {
+  stop("The number of new column names doesn't match the number of columns to be renamed.")
+}
+
+# Check the updated df1
+glimpse(Prot_raw2)
+```
+
+
+
+
+### Pre-normalization data inspection 
+```{r }
+#Tabular expression of data with uniprot ids excluded 
+
+Prot_raw_init <- Prot_raw2 %>%
+  dplyr::filter(!grepl("^REV", Protein.IDs))
+
+# Raw data column totals
+
+format(round(colSums(Prot_raw2[,-1], na.rm=TRUE), digits = 0), big.mark = ",")
+```
+
+```{r }
+#Raw data Boxplot
+
+boxplot(log2(Prot_raw_init[, -1]),
+   notch = TRUE,
+  main = 'RAW data without normalization',
+  xlab = 'TMT Samples',
+  ylab = 'log2 of Intensity'
+)
+
+```
+#Raw data in density plots (like a distribution histogram)
+
+```{r, echo = FALSE}
+# can also look at density plots (like a distribution histogram)
+plotDensities(log2(Prot_raw_init[, -1]),
+              main = 'Raw data',
+              legend = FALSE)
+```
+
+```{r, fig.width= 15}
+
+#Total number of proteins quantified per sample
+
+# Calculate the number of non-NA values per column
+non_na_counts <- Prot_raw_init %>%
+  select(-Protein.IDs) %>% # Exclude the Protein.IDs column
+  summarise(across(everything(), ~ sum(!is.na(.))))%>%
+  pivot_longer(everything(), names_to = "Sample", values_to = "Non_NA_Counts")
+
+# Create the bar diagram
+Proteins_per_sample_plot <- ggplot(non_na_counts, aes(x = Sample, y = Non_NA_Counts)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  theme(axis.text.x = element_text(angle=90, hjust=1, vjust=0.5))+
+  labs(title = "Number of Proteins Identified by Sample",
+       x = "Sample",
+       y = "Number of Non-NA Values") 
+  
+#ggsave("C:/Users/AG_Oellerich/OneDrive - Johann Wolfgang Goethe Universität/Frankfurt_Oellerich/2024-08_CSF_Klinsing_cohort2/MS results/plots/2024-10-10_proteins_per_sample.png", Proteins_per_sample_plot, width = 350, height = 200, units = "mm")
+
+```
+
+```{r }
+
+#create PCA df
+dataPCA_raw <- Prot_raw_init[,-1] %>%
+  drop_na() %>%
+  t() %>%
+  as.data.frame()
+##make rownames to first column
+dataPCA_raw <- dataPCA_raw %>%
+  as.data.frame() %>%
+  tibble::rownames_to_column("Sample_ID") 
+
+data_PCA_ov_raw <- dataPCA_raw %>%
+  separate(Sample_ID, c("Label", "Replicate", "Plex", "Condition", "SampleID"), sep = "_")
+
+rownames(data_PCA_ov_raw) <- dataPCA_raw$Sample_ID
+
+#create second dummy ds
+dataPCA_raw1 <- dataPCA_raw[,-1]
+#remove first column
+dataPCA_raw$Sample_ID<- NULL 
+#create PCA object prcomp
+data_pca_raw <- prcomp(dataPCA_raw1, center = TRUE, scale. = TRUE)
+#plot PCA object with cell line information
+
+n <- 6
+
+palette <- distinctColorPalette(n)
+
+autoplot(data_pca_raw, data = data_PCA_ov_raw, label= TRUE, colour = "Plex", legend = FALSE) + 
+  theme_classic() +
+  scale_color_manual(values = palette) +
+  guides(color = "none")
+
+```
+
+```{r }
+
+#Missingness rate
+
+# Calculate missingness rate per protein
+missingness_per_protein <- Prot_raw_init %>%
+  # Gather all sample columns into long format
+  pivot_longer(cols = -Protein.IDs, names_to = "Sample", values_to = "Intensity") %>%
+  group_by(Protein.IDs) %>%
+  # Calculate number of non-missing values per protein
+  summarize(total_values = n(),
+            non_missing_values = sum(!is.na(Intensity)))%>%
+  # Calculate percentage of missing values per protein
+  mutate(missingness_rate = (100-((non_missing_values / total_values)) * 100))
+
+missingness_plot <- missingness_per_protein %>% 
+  ggplot(aes(x=missingness_rate)) +
+  geom_histogram(col = "black", bins = 30) +
+  cowplot::theme_cowplot() +
+  ggtitle("histogram of protein missingness, all samples")+
+ labs(x="Missingness rate (%)", 
+      y="Protein Count")
+
+
+#ggsave("C:/Users/AG_Oellerich/OneDrive - Johann Wolfgang Goethe Universität/Frankfurt_Oellerich/2024-08_CSF_Klinsing_cohort2/MS results/plots/2024-10-10_missingness.png", missingness_plot, width = 250, height = 200, units = "mm")
+
+
+```
+
+#Sample loading (Sl) normalization
+```{r }
+  #We should have the total signals in each channel summing to the same value. We have significant differences that we can correct with some basic normalizing. We can average the numbers below and compute normalization factors to make the sums end up the same. -> corrects for small sample loading and labeling reaction efficiency differences.
+#summary: Summe jedes Channels/Probe -> mean aller Proben (mittlere Spaltengesamtintensität) -> Spaltenkorrekturfaktor (mittlere Spaltengesamtintenstität )/jeweilige Spaltenintensität --> Anwendung des Faktors auf jede Spalte
+#Code von pwilmart.github
+
+# separate the TMT data by experiment
+# we do not need to do this for the normalization factor calculation here,
+# but we will need these data frames for the IRS step below.
+exp1_raw <- Prot_raw_init %>% select("Protein.IDs", contains("_825"))
+
+exp2_raw <- Prot_raw_init %>% select("Protein.IDs", contains("_826"))
+
+exp3_raw <- Prot_raw_init %>% select("Protein.IDs", contains("_827"))
+
+exp4_raw <- Prot_raw_init %>% select("Protein.IDs", contains("_828"))
+
+exp5_raw <- Prot_raw_init %>% select("Protein.IDs", contains("_829"))
+
+exp6_raw <- Prot_raw_init %>% select("Protein.IDs", contains("_830"))
+
+
+# first basic normalization is to adjust each TMT experiment to equal signal per channel
+# figure out the global scaling value
+target <- mean(c(colSums(exp1_raw[,-1], na.rm = TRUE), colSums(exp2_raw[,-1], na.rm=TRUE), colSums(exp3_raw[,-1], na.rm=TRUE), colSums(exp4_raw[,-1], na.rm=TRUE),colSums(exp5_raw[,-1], na.rm=TRUE),colSums(exp6_raw[,-1], na.rm=TRUE) ))
+
+# do the sample loading normalization before the IRS normalization
+# there is a different correction factor for each column
+norm_facs <- target / colSums(exp1_raw[,-1], na.rm = TRUE)
+exp1_sl <- sweep(exp1_raw[-1], 2, norm_facs, FUN = "*")
+
+norm_facs2 <- target / colSums(exp2_raw[,-1], na.rm = TRUE)
+exp2_sl <- sweep(exp2_raw[,-1], 2, norm_facs2, FUN = "*")
+
+norm_facs3 <- target / colSums(exp3_raw[,-1], na.rm = TRUE)
+exp3_sl <- sweep(exp3_raw[,-1], 2, norm_facs3, FUN = "*")
+
+norm_facs4 <- target / colSums(exp4_raw[,-1], na.rm = TRUE)
+exp4_sl <- sweep(exp4_raw[,-1], 2, norm_facs4, FUN = "*")
+
+norm_facs5 <- target / colSums(exp5_raw[,-1], na.rm = TRUE)
+exp5_sl <- sweep(exp5_raw[,-1], 2, norm_facs5, FUN = "*")
+
+
+norm_facs6 <- target / colSums(exp6_raw[,-1], na.rm = TRUE)
+exp6_sl <- sweep(exp6_raw[,-1], 2, norm_facs6, FUN = "*")
+
+
+
+
+# make a pre-IRS data frame after sample loading normalizations
+data_sl <- cbind(exp1_raw%>%select("Protein.IDs"), exp1_sl, exp2_sl, exp3_sl, exp4_sl, exp5_sl, exp6_sl)
+
+boxplot(log2(data_sl[,-1]), 
+        notch = TRUE, main = "Sample Loading (SL) normalized data",
+        xlab = 'TMT Sample', ylab = 'log2 of Intensity')
+```
+
+```{r, fig.width=15 }
+
+plotDensities(log2(data_sl[,-1]), main = "SL normalization")
+
+```
+
+```{r }
+
+#create PCA df
+dataPCA_sl <- data_sl[,-1] %>%
+  drop_na() %>% #drops rows with NA values completely
+  t() %>% #transforms rows <-> columns
+  as.data.frame() 
+##make rownames to first column
+dataPCA_sl <- dataPCA_sl %>%
+  as.data.frame() %>%
+  tibble::rownames_to_column("Sample_ID") 
+
+data_PCA_ov_sl <- dataPCA_sl %>%
+  separate(Sample_ID, c("Label", "Replicate", "Plex", "Condition", "SampleID"), sep = "_")
+
+rownames(data_PCA_ov_sl) <- dataPCA_sl$Sample_ID
+
+#create second dummy ds
+dataPCA_sl1 <- dataPCA_sl
+#remove first column
+dataPCA_sl1$Sample_ID<- NULL 
+#create PCA object prcomp
+data_pca_sl <- prcomp(dataPCA_sl1, center = TRUE, scale. = TRUE)
+#plot PCA object 
+
+n <- 6
+palette <- distinctColorPalette(n)
+
+autoplot(data_pca_sl, data = data_PCA_ov_sl, label= TRUE, colour = "Plex", legend = FALSE) + 
+  theme_classic() +
+  scale_color_manual(values = palette) +
+  guides(color = "none")
+
+```
+
+```{r }
+# check column totals
+format(round(colSums(data_sl[,-1], na.rm=TRUE), digits = 0), big.mark = ",")
+```
+
+## Internal reference scaling (IRS) normalization between plexes 
+```{r }
+#make a dataframe of the reference channels per plex 
+irs_factors <- data_sl %>% 
+  dplyr::select(contains("Std"))
+
+#calculate the geometric mean per row of the reference channels 
+irs_factors$geomean <- apply(irs_factors, 1, function(x) exp(mean(log(x), na.rm = TRUE)))
+
+#pull out sample names to identify
+irs_factor_vec = as.vector(names(irs_factors))
+
+#create the protein and reference channel wise scaling factor 
+for(i in irs_factor_vec) {
+  factor <-  irs_factors$geomean / (irs_factors %>% dplyr::select(i))
+  irs_factors[,paste0("fac_",i)] <- factor
+}
+
+#step-by-step breakdown of the code:
+  #for(i in irs_factor_vec) {: This line initiates a for loop that iterates over each element in the irs_factor_vec.
+  #factor <- irs_factors$geomean / (irs_factors %>% dplyr::select(i)):
+  #irs_factors$geomean: Accesses the geomean column in the irs_factors data frame.
+  #irs_factors %>% dplyr::select(i): Uses dplyr::select to select the column named by the current value of i in the irs_factors data frame.
+  #The division irs_factors$geomean / (irs_factors %>% dplyr::select(i)) calculates the factor.
+  #irs_factors[,paste0("fac_",i)] <- factor: This line creates a new column in the irs_factors data frame. The name of the new column is constructed by concatenating "fac_" with the current value of i. The calculated      #factor is assigned to this new column.
+
+
+data_irs_825_R1 <- cbind(data_sl%>%select("Protein.IDs"), data_sl%>% select(contains("R1_825")) * irs_factors$fac_.1_R1_825_Std_Std)
+data_irs_825_R2 <- cbind(data_sl%>%select("Protein.IDs"), data_sl%>% select(contains("R2_825")) * irs_factors$fac_.1_R2_825_Std_Std)
+
+data_irs_826_R1 <- cbind(data_sl%>%select("Protein.IDs"), data_sl%>% select(contains("R1_826")) * irs_factors$fac_.1_R1_826_Std_Std)
+data_irs_826_R2 <- cbind(data_sl%>%select("Protein.IDs"), data_sl%>% select(contains("R2_826")) * irs_factors$fac_.1_R2_826_Std_Std)
+
+data_irs_827_R1 <- cbind(data_sl%>%select("Protein.IDs"), data_sl%>% select(contains("R1_827")) * irs_factors$fac_.1_R1_827_Std_Std)
+data_irs_827_R2 <- cbind(data_sl%>%select("Protein.IDs"), data_sl%>% select(contains("R2_827")) * irs_factors$fac_.1_R2_827_Std_Std)
+
+data_irs_828_R1 <- cbind(data_sl%>%select("Protein.IDs"), data_sl%>% select(contains("R1_828")) * irs_factors$fac_.1_R1_828_Std_Std)
+data_irs_828_R2 <- cbind(data_sl%>%select("Protein.IDs"), data_sl%>% select(contains("R2_828")) * irs_factors$fac_.1_R2_828_Std_Std)
+
+data_irs_829_R1 <- cbind(data_sl%>%select("Protein.IDs"), data_sl%>% select(contains("R1_829")) * irs_factors$fac_.1_R1_829_Std_Std)
+data_irs_829_R2 <- cbind(data_sl%>%select("Protein.IDs"), data_sl%>% select(contains("R2_829")) * irs_factors$fac_.1_R2_829_Std_Std)
+
+data_irs_830_R1 <- cbind(data_sl%>%select("Protein.IDs"), data_sl%>% select(contains("R1_830")) * irs_factors$fac_.1_R1_830_Std_Std)
+data_irs_830_R2 <- cbind(data_sl%>%select("Protein.IDs"), data_sl%>% select(contains("R2_830")) * irs_factors$fac_.1_R2_830_Std_Std)
+
+data_irs <- data_irs_825_R1 %>%
+  left_join(data_irs_825_R2, by = "Protein.IDs") %>%
+  left_join(data_irs_826_R1, by = "Protein.IDs") %>%
+  left_join(data_irs_826_R2, by = "Protein.IDs") %>%
+  left_join(data_irs_827_R1, by = "Protein.IDs") %>%
+  left_join(data_irs_827_R2, by = "Protein.IDs") %>%
+  left_join(data_irs_828_R1, by = "Protein.IDs") %>%
+  left_join(data_irs_828_R2, by = "Protein.IDs")%>%
+  left_join(data_irs_829_R1, by = "Protein.IDs")%>%
+  left_join(data_irs_829_R2, by = "Protein.IDs")%>%
+  left_join(data_irs_830_R1, by = "Protein.IDs")%>%
+  left_join(data_irs_830_R2, by = "Protein.IDs")
+
+#library(openxlsx)
+#excel file saved below with Protein Description columns etc.
+
+```
+
+```{r }
+
+# see what the IRS data look like
+boxplot(log2(data_irs[,-1]), 
+        main = "Internal Reference Scaling (IRS) normalized data",
+        xlab = 'TMT Sample', ylab = 'log2 of Intensity', notch = TRUE)
+
+```
+
+```{r , fig.width=15}
+
+
+# can also look at density plots (like a distribution histogram)    
+plotDensities(log2(data_irs[,-1]),  main = "IRS data")
+```
+
+```{r }
+
+#create PCA df
+dataPCA_irs <- data_irs[,-1] %>%
+  drop_na() %>%
+  t() %>%
+  as.data.frame()
+##make rownames to first column
+dataPCA_irs <- dataPCA_irs %>%
+  as.data.frame() %>%
+  tibble::rownames_to_column("Sample_ID") 
+
+data_PCA_ov_irs <- dataPCA_irs %>%
+  separate(Sample_ID, c("Label", "Replicate", "Plex", "Condition", "SampleID"), sep = "_")
+
+rownames(data_PCA_ov_irs) <- dataPCA_irs$Sample_ID
+
+#create second dummy ds
+dataPCA_irs1 <- dataPCA_irs
+#remove first column
+dataPCA_irs1$Sample_ID<- NULL 
+#create PCA object prcomp
+data_pca_irs <- prcomp(dataPCA_irs1, center = TRUE, scale. = TRUE)
+#plot PCA object with cell line information
+
+n <- 10
+palette <- distinctColorPalette(n)
+
+#library(ggrepel)
+
+pca_irs_plot <- autoplot(data_pca_irs, data = data_PCA_ov_irs, label= TRUE, colour = "Condition", legend = FALSE) + 
+  theme_classic() +
+  scale_color_manual(values = palette) +
+  guides(color = "none") 
+#pca with z-score scaled data see below
+
+
+#library(ggplot2)
+#ggsave("C:/Users/AG_Oellerich/OneDrive - Johann Wolfgang Goethe Universität/Frankfurt_Oellerich/2024-08_CSF_Klinsing_cohort2/MS results/plots/2024-10-10_PCA_IRS.png", pca_irs_plot, width = 250, height = 200, units = "mm")
+
+```
+
+```{r }
+# check column totals
+format(round(colSums(data_irs[,-1], na.rm=TRUE), digits = 0), big.mark = ",")
+```
+
+```{r, fig.width=12}
+# heatmap
+library(pheatmap)
+pheatmap_irs_plot <- pheatmap(data_irs[2:127], cluster_rows = FALSE, cluster_cols = TRUE, na_col = "white")
+
+
+
+
+#ggsave("/Users/josefinejakob/Desktop/Frankfurt_Oellerich/2024-05_CSF_Klinsing/Protokolle-Results/MS results/plots/2024-06-24_heatmap_irs.png", pheatmap_irs_plot, width = 250, height = 200, units = "mm")
+
+```
+
+
+
+#Further processing (lg2, Imputation, Means of replicates)
+```{r }
+Prot_raw_txt <- Prot_raw %>% select(,c(1,2,6:8, 10:12, 56))
+#DEFINE PROTEIN AND GENE NAMES
+# Extract Protein name
+Prot_raw_txt$Protein = sub("OS=.*","", sub(".*HUMAN","", Prot_raw_txt$Fasta.headers))
+# Extract Gene ID
+Prot_raw_txt$Gene <- sub(".*GN=","", sub("PE=.*", "", Prot_raw_txt$Fasta.headers))
+
+data_irs_long <- data_irs %>% 
+  left_join(Prot_raw_txt, by = "Protein.IDs") %>%
+  left_join(missingness_per_protein[,c("Protein.IDs", "missingness_rate")], by= "Protein.IDs")
+
+glimpse(data_irs_long)
+
+library(openxlsx)
+#write.xlsx(data_irs_long, "C:/Users/AG_Oellerich/OneDrive - Johann Wolfgang Goethe Universität/Frankfurt_Oellerich/2024-08_CSF_Klinsing_cohort2/MS results/2024-10-10_data_normalized_sl_irs.xlsx")
+
+```
+
+```{r, fig.width=10}
+#data loading mac
+#data_irs_long <- read.xlsx("/Users/josefinejakob/Library/CloudStorage/OneDrive-JohannWolfgangGoetheUniversität/Frankfurt_Oellerich/2024-08_CSF_Klinsing_cohort2/MS results/2024-10-10_data_normalized_sl_irs.xlsx")
+
+###########Z-SCORE
+# Function to perform Z-score normalization per row
+z_normalize <- function(row) {
+  row_mean <- mean(row, na.rm = TRUE)
+  row_sd <- sd(row, na.rm = TRUE)
+  (row - row_mean) / row_sd
+}
+
+# Apply the function to each row
+data_irs_subset_scaled <- data_irs_long[,2:127]
+glimpse(data_irs_subset_scaled)
+data_irs_subset_scaled <- t(apply(data_irs_subset_scaled, 1, z_normalize)) #1: function should be applied over the rows.
+                                                             #2: function should be applied over the columns.
+
+# Replace the scaled subset back into the original dataframe
+data_irs_scaled <- data_irs_long # Copy original dataframe to preserve unmodified rows
+
+data_irs_scaled [, 2:127] <- data_irs_subset_scaled
+glimpse(data_irs_scaled)
+
+
+```
+
+```{r }
+#PCA with z-scaled data
+#create PCA df
+
+dataPCA_irs_scaled <- data_irs_scaled[,2:127] %>%
+  drop_na() %>%
+  t() %>%
+  as.data.frame()
+##make rownames to first column
+dataPCA_irs_scaled <- dataPCA_irs_scaled %>%
+  as.data.frame() %>%
+  tibble::rownames_to_column("Sample_ID") 
+
+data_PCA_scaled_ov_irs <- dataPCA_irs_scaled %>%
+  separate(Sample_ID, c("Label", "Replicate", "Plex", "Condition", "SampleID"), sep = "_")
+
+rownames(data_PCA_scaled_ov_irs) <- dataPCA_irs_scaled$Sample_ID
+
+#create second dummy ds
+dataPCA_irs_scaled1 <- dataPCA_irs_scaled
+#remove first column
+dataPCA_irs_scaled1$Sample_ID<- NULL 
+#create PCA object prcomp
+data_pca_irs_scaled <- prcomp(dataPCA_irs_scaled1, center = TRUE, scale. = TRUE)
+#plot PCA object with cell line information
+
+n <- 10
+palette <- distinctColorPalette(n)
+
+#library(ggrepel)
+
+pca_irs_scaled_plot <- autoplot(data_pca_irs_scaled, data = data_PCA_scaled_ov_irs, label= TRUE, colour = "Condition", legend = FALSE) + 
+  theme_classic() +
+  scale_color_manual(values = palette) +
+  guides(color = "none") 
+#pca with z-score scaled data see below
+
+
+#library(ggplot2)
+#ggsave("C:/Users/AG_Oellerich/OneDrive - Johann Wolfgang Goethe Universität/Frankfurt_Oellerich/2024-06_Leber_Maus_Hornung/MS results/plots/2024-07-29_liver_Hornung_PCA_norm_scaled.png", pca_irs_scaled_plot, width = 400, height = 250, units = "mm")
+
+```
+
+#LOG2 Transformation
+```{r }
+library(openxlsx)
+
+
+#windows:
+data_irs_long <- read_excel("C:/Users/AG_Oellerich/OneDrive - Johann Wolfgang Goethe Universität/Frankfurt_Oellerich/2024-08_CSF_Klinsing_cohort2/MS results//2024-10-10_data_normalized_sl_ir.xlsx")
+
+#mac
+data_irs_long<- read_excel("/Users/josefinejakob/Library/CloudStorage/OneDrive-JohannWolfgangGoetheUniversität/Frankfurt_Oellerich/2024-08_CSF_Klinsing_cohort2/MS results/2024-10-10_data_normalized_sl_irs.xlsx")
+
+#LOG2 Transformation
+glimpse(data_irs_long)
+data_lg2 <- data_irs_long %>% rename_at(vars(starts_with(".1_R1_825_Std_Std"):starts_with(".10_R2_830_Metastasis_E24-313")), ~ paste0("log2", .))
+
+
+data_lg2[2:127] = log2(data_lg2[2:127])
+
+glimpse(data_lg2)
+
+#filter out proteins with missingness >70%
+data_lg2f <- data_lg2 %>% filter(missingness_rate <= 70)
+
+
+
+```
+#Imputation with DreamAI
+```{r install packages, echo=FALSE}
+#Packages required prior to installing DreamAI
+
+require("cluster")
+require("survival")
+require("randomForest")
+require("missForest")
+require("glmnet")
+require("Rcpp")
+require("foreach")
+require("itertools")
+require("iterators")
+require("Matrix")
+require("devtools")
+if (!requireNamespace("BiocManager", quietly = TRUE))
+install.packages("BiocManager")
+  BiocManager::install(version = '3.20')
+BiocManager::install("impute", version = "3.20")
+require("impute")
+
+```
+
+```{r install DreamAI, echo=FALSE}
+# install DreamAI requirements
+require("remotes")
+#install_github("WangLab-MSSM/DreamAI/Code")
+
+devtools::install_github("WangLab-MSSM/DreamAI/Code", dependencies = TRUE)
+```
+
+```{r DreamAI example}
+library(DreamAI)
+
+imputed <- DreamAI(data_lg2f[,2:127],k=10,maxiter_MF = 10, ntree = 100,maxnodes = NULL,maxiter_ADMIN=30,tol=10^(-2),gamma_ADMIN=NA,gamma=50,CV=FALSE,fillmethod="row_mean",maxiter_RegImpute=10,conv_nrmse = 1e-6,iter_SpectroFM=40, method = c("KNN", "MissForest", "ADMIN", "Birnn", "SpectroFM", "RegImpute"),out="Ensemble")
+data_lg2I <- imputed$Ensemble
+
+#Now add the imputed columns 2:127 to the whole data frame (which includes gene names etc)
+# Create a new data frame by replacing columns 2:127
+data_lg2I_long <- data_lg2f
+data_lg2I_long[, 2:127] <- data_lg2I
+
+# Check structure of the new data frame
+str(data_lg2I_long)
+
+# Preview the first few rows
+head(data_lg2I_long)
+
+library(openxlsx)
+write.xlsx(data_lg2I_long, "/Users/josefinejakob/Library/CloudStorage/OneDrive-JohannWolfgangGoetheUniversität/Frankfurt_Oellerich/2024-08_CSF_Klinsing_cohort2/MS results/2024-12-03_data_normalized_DreamAI_imputed.xlsx")
+```
+
+```{r, fig.height=15 }
+#heatmap of DreamAI imputed data
+library(pheatmap)
+
+pheatmap_imputed_plot <- pheatmap(data_lg2I_long[2:127], cluster_rows = FALSE, cluster_cols = TRUE, na_col = "white")
+
+#pheatmap of z-scaled data
+# Function to perform Z-score normalization per row
+z_normalize <- function(row) {
+  row_mean <- mean(row, na.rm = TRUE)
+  row_sd <- sd(row, na.rm = TRUE)
+  (row - row_mean) / row_sd
+}
+
+# Apply the function to each row
+data_lg2I_subset <- data_lg2I_long[,2:127]
+glimpse(data_lg2I_subset)
+data_lg2I_subset_scaled <- t(apply(data_lg2I_subset, 1, z_normalize)) #1: function should be applied over the rows.
+                                                                                #2: function should be applied over the columns.
+
+# Replace the scaled subset back into the original dataframe
+data_lg2I_scaled <- data_lg2I_long # Copy original dataframe to preserve unmodified rows
+
+data_lg2I_scaled [, 2:127] <- data_lg2I_subset_scaled
+glimpse(data_lg2I_scaled)
+
+pheatmap_imputed_scaled_plot <- pheatmap(data_lg2I_scaled[,2:127], cluster_rows = FALSE, cluster_cols = TRUE, na_col = "white")
+
+```
+
+#Mean of replicates
+```{r }
+
+
+#windows: 
+data_lg2I_long <- read_excel("C:/Users/AG_Oellerich/OneDrive - Johann Wolfgang Goethe Universität/Frankfurt_Oellerich/2024-08_CSF_Klinsing_cohort2/MS results/2024-12-03_data_normalized_DreamAI_imputed.xlsx")
+
+#show headers
+names(data_lg2I_long)
+
+
+calculate_replicate_means <- function(data_lg2I_long) {
+ # Ensure input is a data frame
+  data_lg2I_long <- as.data.frame(data_lg2I_long)
+  
+   # Extract column names
+  column_names <- names(data_lg2I_long)
+  
+  # Filter out only the columns that start with "log2."
+  log2_columns <- column_names[grepl("^log2\\.", column_names)]
+  
+  # Extract the unique pattern (Sample name with E24-xxxx) from the end of the column names
+  patterns <- unique(gsub(".*_R[12]_.*?_(.*)", "\\1", log2_columns))  # Capture unique sample identifiers (E.g., Primary-CNS-tumor_E24-0864)
+  
+  print("Replicate Patterns:")
+  print(patterns)
+  
+  for (pattern in patterns) {
+    # Construct regex pattern for columns with R1 and R2 for each unique sample
+    pattern_regex <- paste0("_R[12]_.*_", pattern, "$")
+    
+    # Find columns matching the current pattern (for both R1 and R2 replicates)
+    replicate_cols <- grep(pattern_regex, log2_columns, value = TRUE, perl = TRUE)
+    
+    print(paste("Pattern:", pattern))
+    print("Replicate Columns:")
+    print(replicate_cols)
+    
+    if (length(replicate_cols) >= 2) {
+      # If we find columns for both R1 and R2
+      mean_col_name <- paste0("mean_", pattern)
+      data_lg2I_long <- data_lg2I_long %>%
+        mutate(!!mean_col_name := rowMeans(select(., all_of(replicate_cols)), na.rm = TRUE))
+    }
+  }
+  
+  return(data_lg2I_long)
+}
+
+
+
+# Apply the function to the data frame
+data_lg2I_reps <- calculate_replicate_means(data_lg2I_long)
+
+#write.xlsx(data_lg2I_reps, "C:/Users/AG_Oellerich/OneDrive - Johann Wolfgang Goethe Universität/Frankfurt_Oellerich/2024-08_CSF_Klinsing_cohort2/MS results/2024-12-04_data_DreamAI_imputed_means.xlsx")
+
+```
+
+```{r, fig.width=15 }
+#z-scale the imputed_means data
+glimpse(data_lg2I_reps)
+
+
+# Function to perform Z-score normalization per row
+z_normalize <- function(row) {
+  row_mean <- mean(row, na.rm = TRUE)
+  row_sd <- sd(row, na.rm = TRUE)
+  (row - row_mean) / row_sd
+}
+
+# Apply the function to each row
+data_lg2I_reps_subset <- data_lg2I_reps[,138:195]
+glimpse(data_lg2I_reps_subset)
+data_lg2I_subset_reps_scaled <- t(apply(data_lg2I_reps_subset, 1, z_normalize)) #1: function should be applied over the rows.
+                                                                                #2: function should be applied over the columns.
+
+
+# Replace the scaled subset back into the original dataframe
+data_lg2I_reps_scaled <- data_lg2I_reps # Copy original dataframe to preserve unmodified rows
+
+data_lg2I_reps_scaled [, 138:195] <- data_lg2I_subset_reps_scaled
+glimpse(data_lg2I_reps_scaled)
+
+pheatmap_means_scaled_plot <- pheatmap(data_lg2I_reps_scaled[,138:195], cluster_rows = FALSE, cluster_cols = TRUE, na_col = "white")
+```
+
+```{r, fig.height=15 }
+#heatmap
+library(pheatmap)
+
+## To color samples according to the condition: Make rownames to first column and separate Sample_ID
+data_heatmap_lg2I_reps <- data.frame(Sample_ID = colnames(data_lg2I_reps_scaled[,139:195]))
+
+data_heatmap_ov_lg2I_reps <- data_heatmap_lg2I_reps %>%
+  separate(Sample_ID, c("mean", "Condition", "SampleID"), sep = "_")
+
+rownames(data_heatmap_ov_lg2I_reps) <- data_heatmap_lg2I_reps$Sample_ID
+
+# Create annotation data frame
+sample_annotations <- data_heatmap_ov_lg2I_reps %>%
+  select(Condition)                 #select condition will remove mean and PLex (they would also be shown otherwise in the heatmap with colors)
+
+
+
+# Define annotation colors
+ann_colors <- list(
+  Condition = c("Std" = "grey", "Metastasis" = "lightblue", "Primary-CNS-tumor" = "blue", "Lymphoma"="green", "Inflammatory" ="red", "Control" = "purple")
+)
+
+
+
+
+# Generate the heatmap with annotations
+
+
+pheatmap_imputed_means <- pheatmap(data_lg2I_reps_scaled[,139:195],
+         cluster_rows = TRUE,  # Enable clustering of rows
+         cluster_cols = TRUE,  # Enable clustering of columns
+         clustering_distance_rows = "euclidean", # Euclidean distance for rows
+         clustering_distance_cols = "euclidean", # Euclidean distance for columns
+         clustering_method = "complete", # Clustering method, e.g., complete linkage
+         scale = "none", # Data is already scaled
+         show_rownames = TRUE, # Display row names
+         show_colnames = TRUE, # Display column names
+         color = colorRampPalette(c("blue", "white", "red"))(100),
+         annotation_colors = ann_colors,
+         annotation_col = sample_annotations) # Color scheme
+
+
+#Windows: 
+#ggsave("C:/Users/AG_Oellerich/OneDrive - Johann Wolfgang Goethe Universität/Frankfurt_Oellerich/2024-08_CSF_Klinsing_cohort2/MS results/plots/2024-12-04_CSF_heatmap_DreamAI_imputed_means_.png", pheatmap_imputed_means, width = 300, height = 200, units = "mm")
+```
+
+```{r, echo = FALSE, fig.height=5, fig.width=10}
+
+#PCA
+#create PCA df
+data_lg2I_reps_PCA <- data_lg2I_reps_scaled[,139:195] %>%
+  drop_na() %>%
+  t() %>%
+  as.data.frame()
+
+##make rownames to first column
+dataPCA_lg2I_reps<- data_lg2I_reps_PCA %>%
+  as.data.frame() %>%
+  tibble::rownames_to_column("Sample_ID") 
+  
+data_PCA_ov_lg2I_reps <- dataPCA_lg2I_reps %>%
+  separate(Sample_ID, c("mean", "Condition", "SampleID"), sep = "_")
+
+rownames(data_PCA_ov_lg2I_reps) <- dataPCA_lg2I_reps$Sample_ID
+
+
+
+#create second dummy ds
+dataPCA_lg2I_reps_1 <- dataPCA_lg2I_reps
+#remove first column
+dataPCA_lg2I_reps_1$Sample_ID<- NULL 
+#create PCA object prcomp
+data_pca_lg2I_reps <- prcomp(dataPCA_lg2I_reps_1, center = TRUE, scale. = TRUE)
+#plot PCA object with cell line information
+
+
+
+
+#o <- 9
+#palette <- distinctColorPalette(o)
+palette <- c("Std" = "grey", "Metastasis" = "lightblue", "Primary-CNS-tumor" = "blue", "Lymphoma"="green", "Inflammatory" ="red", "Control" = "purple")
+
+pca_lg2I_reps <- autoplot(data_pca_lg2I_reps, data = data_PCA_ov_lg2I_reps, label= FALSE, colour = "Condition", legend = FALSE) + 
+  geom_text(aes(label = SampleID), vjust = 1.5, size = 4) +
+  theme_classic() +
+  scale_color_manual(values = palette) +
+  guides(color = guide_legend(title = "Condition", size=4), size=4)+
+  stat_ellipse(aes(color = Condition))
+
+#Windows: 
+#ggsave("C:/Users/AG_Oellerich/OneDrive - Johann Wolfgang Goethe Universität/Frankfurt_Oellerich/2024-08_CSF_Klinsing_cohort2/MS results/plots/2024-12-14_CSF_pca_DreamAI_imputed_means.png", pca_lg2I_reps, width = 350, height = 200, units = "mm")
+
+
+
+# Count the number of samples per condition
+condition_counts <- sample_annotations %>%
+  group_by(Condition) %>%
+  summarise(Count = n())
+
+# View the counts
+print(condition_counts)
+
+```
+
+## Group-wise analysis
+```{r}
+
+library(openxlsx)
+
+#windows:
+#data_lg2I_reps <- read_excel("C:/Users/AG_Oellerich/OneDrive - Johann Wolfgang Goethe Universität/Frankfurt_Oellerich/2024-08_CSF_Klinsing_cohort2/MS results/2024-10-10_data_imputed_means.xlsx")
+
+data_lg2I_reps2 <- data_lg2I_reps[,c(1,130, 136, 139:195)]
+
+count_inflammatory <- sum(grepl("Inflammatory", colnames(data_lg2I_reps2)))
+rest_noInfl <- c("Control","Metastasis","Primary-CNS-tumor","Lymphoma")
+
+count_rest_noInfl <- sum(colnames(data_lg2I_reps2) %>% str_detect(paste(rest_noInfl, collapse = "|")))
+
+
+data_lg2I_reps_FC <- data_lg2I_reps2 %>% 
+  mutate(FC_Infl_vs_Ctrl = apply(data_lg2I_reps2 %>% select(contains("Inflammatory"), contains("Control")), 1, function(x) {mean(x[1:16])- mean(x[17:20])})) %>% 
+  mutate(
+    # Calculate the mean intensity for Inflammatory group
+    Mean_Inflammatory = rowMeans(select(., contains("Inflammatory")), na.rm = TRUE),
+    
+    # Calculate the mean intensity for the rest (Control, Metastasis, Primary-CNS-tumor, Lymphoma)
+    Mean_Rest = rowMeans(select(., contains("Control"), contains("Metastasis"), 
+                                contains("Primary-CNS-tumor"), contains("Lymphoma")), na.rm = TRUE),
+    
+    # Compute the fold change (Inflammatory vs Rest)
+    FC_Infl_vs_Rest = Mean_Inflammatory - Mean_Rest
+  )
+
+
+
+
+``` 
+
+
+```{r}
+#Inflammatory vs Ctrl
+library(tidyr)
+library(rstatix)
+library(ggrepel)
+
+Infl_vs_Ctrl <- data_lg2I_reps2%>% 
+  select(contains("Inflammatory"), contains("Control"), Protein.IDs) %>%
+pivot_longer(contains("mean_")) %>%
+  group_by(Protein.IDs) %>%
+  mutate(Group = case_when(
+    grepl("Inflammatory", name) ~ "Inflammatory",
+    grepl("Control", name) ~ "Control",  FALSE ~ "Other" )) %>%
+  t_test(value ~ Group)
+
+vocano  <- data_lg2I_reps_FC %>% 
+  left_join(Infl_vs_Ctrl [,c("p", "Protein.IDs")], by = "Protein.IDs") %>% 
+  mutate(P_Infl_vs_Ctrl = -log10(p)) %>% 
+  select(-p) 
+
+Scatter_Infl_vs_Ctrl<- ggplot(vocano, mapping=aes(FC_Infl_vs_Ctrl , P_Infl_vs_Ctrl ))+
+  geom_point()+
+  ylab("-log(p)")+
+  xlab("log2(FC)")+
+  #expand_limits(x=c(-6,6), y=c(0, 6))+
+  ggtitle("Infl_vs_Ctrl")+
+  geom_point(data=vocano %>% filter(FC_Infl_vs_Ctrl<(-0.6) & P_Infl_vs_Ctrl >1.301), color="cadetblue3")+
+  geom_point(data=vocano  %>% filter(FC_Infl_vs_Ctrl >(0.6) & P_Infl_vs_Ctrl >1.301), color="cadetblue3")+
+geom_text_repel(data = vocano %>% 
+                  filter((FC_Infl_vs_Ctrl > 0.6 | FC_Infl_vs_Ctrl  < -0.6) & P_Infl_vs_Ctrl> 1.301), 
+                aes(label = Gene.names), color = "red") 
+#geom_segment(aes(x = 1, y = 1.301, xend= 4, yend = 1.301), color="red", linewidth =1.2, linetype="dashed")+
+ # geom_segment(aes(x = -4, y = 1.301, xend= -1, yend = 1.301), color="red", linewidth =1.2, linetype="dashed")+
+ # geom_segment(aes(x = 1, y = 1.301, xend= 1, yend = 9), color="red", linewidth =1.2, linetype="dashed")+
+ # geom_segment(aes(x = -1, y = 1.301, xend= -1, yend = 9), color="red", linewidth =1.2, linetype="dashed")
+
+```
+
+```{r}
+#Inflammatory vs all others
+library(tidyr)
+library(rstatix)
+library(ggrepel)
+
+Infl_vs_rest <- data_lg2I_reps2 %>%
+  select(contains("Inflammatory"), contains("Control"), contains("Metastasis"),
+         contains("Primary-CNS-tumor"), contains("Lymphoma"), Protein.IDs) %>%
+  pivot_longer(cols = -Protein.IDs, names_to = "Sample", values_to = "Value") %>%
+  mutate(Group = case_when(
+    grepl("Inflammatory", Sample) ~ "Inflammatory",
+    grepl("Control|Metastasis|Primary-CNS-tumor|Lymphoma", Sample) ~ "Rest",
+    TRUE ~ NA_character_)) %>%
+  filter(!is.na(Group)) %>%  # Remove rows without a valid group
+  group_by(Protein.IDs) %>%
+  t_test(Value ~ Group)  # Perform t-test
+
+vocano  <- data_lg2I_reps_FC %>% 
+  left_join(Infl_vs_rest [,c("p", "Protein.IDs")], by = "Protein.IDs") %>% 
+  mutate(P_Infl_vs_Rest = -log10(p)) %>% 
+  select(-p) 
+
+Scatter_Infl_vs_rest <- ggplot(vocano, mapping=aes( FC_Infl_vs_Rest , P_Infl_vs_Rest ))+
+  geom_point()+
+  ylab("-log(p)")+
+  xlab("log2(FC)")+
+  #expand_limits(x=c(-6,6), y=c(0, 6))+
+  ggtitle("Infl_vs_Rest")+
+  geom_point(data=vocano %>% filter( FC_Infl_vs_Rest<(-0.6) & P_Infl_vs_Rest >1.301), color="cadetblue3")+
+  geom_point(data=vocano  %>% filter( FC_Infl_vs_Rest >(0.6) & P_Infl_vs_Rest >1.301), color="cadetblue3")+
+geom_text_repel(data = vocano %>% 
+                  filter(( FC_Infl_vs_Rest > 0.6 |  FC_Infl_vs_Rest  < -0.6) & P_Infl_vs_Rest> 1.301), 
+                aes(label = Gene.names), color = "red") 
+#geom_segment(aes(x = 1, y = 1.301, xend= 2, yend = 1.301), color="red", linewidth =1.2, linetype="dashed")+
+ # geom_segment(aes(x = -2, y = 1.301, xend= -1, yend = 1.301), color="red", linewidth =1.2, linetype="dashed")+
+  #geom_segment(aes(x = 1, y = 1.301, xend= 1, yend = 5), color="red", linewidth =1.2, linetype="dashed")+
+ # geom_segment(aes(x = -1, y = 1.301, xend= -1, yend = 5), color="red", linewidth =1.2, linetype="dashed")
+
+#ggsave("C:/Users/AG_Oellerich/OneDrive - Johann Wolfgang Goethe Universität/Frankfurt_Oellerich/2024-08_CSF_Klinsing_cohort2/MS results/plots/2024-12-14_CSF_Scatter_DreamAI_imputed_Inflammation.png", pca_lg2I_reps, width = 350, height = 200, units = "mm")
+
+```
+
+
