@@ -892,7 +892,7 @@ data_lg2I_reps_FC <- data_lg2I_reps2 %>%
 
 ``` 
 
-
+##Foldchanges
 ```{r}
 #Inflammatory vs Ctrl
 library(tidyr)
@@ -931,6 +931,7 @@ geom_text_repel(data = vocano %>%
 
 ```
 
+##Scatterplots
 ```{r}
 #Inflammatory vs all others
 library(tidyr)
@@ -973,5 +974,7 @@ geom_text_repel(data = vocano %>%
 #ggsave("C:/Users/AG_Oellerich/OneDrive - Johann Wolfgang Goethe Universität/Frankfurt_Oellerich/2024-08_CSF_Klinsing_cohort2/MS results/plots/2024-12-14_CSF_Scatter_DreamAI_imputed_Inflammation.png", pca_lg2I_reps, width = 350, height = 200, units = "mm")
 
 ```
+´
+
 
 
